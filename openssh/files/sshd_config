@@ -2,6 +2,23 @@
 {#- present in sshd_config and known in actual file options -#}
 {%- set processed_options = [] -%}
 
+{#- generic renderer used for sshd matches, known options, -#}
+{#- and unknown options -#}
+{%- macro render_option(keyword, default, config_dict=sshd_config) -%}
+  {%- set value = config_dict.get(keyword, default) -%}
+  {%- if value is sameas true -%}
+{{ keyword }} yes
+  {%- elif value is sameas false -%}
+{{ keyword }} no
+  {%- elif value is string or value is number -%}
+{{ keyword }} {{ value }}
+  {%- else -%}
+{%- for single_value in value -%}
+{{ keyword }} {{ single_value }}
+{% endfor -%}
+  {%- endif -%}
+{%- endmacro -%}
+
 {#- macros for render option according to present -#}
 {%- macro option_impl(keyword, default, present) -%}
   {%- if present -%}
@@ -10,18 +27,9 @@
   {%- else -%}
     {%- set prefix='#' -%}
   {%- endif -%}
-  {%- set value = sshd_config.get(keyword, default) -%}
-  {%- if value is sameas true -%}
-{{ prefix }}{{ keyword }} yes
-  {%- elif value is sameas false -%}
-{{ prefix }}{{ keyword }} no
-  {%- elif value is string or value is number -%}
-{{ prefix }}{{ keyword }} {{ value }}
-  {%- else -%}
-{%- for single_value in value -%}
-{{ prefix }}{{ keyword }} {{ single_value }}
-{% endfor -%}
-  {%- endif -%}
+  {#- add prefix to keyword -#}
+  {%- set keyword = prefix ~ keyword -%}
+{{ render_option(keyword, default) }}
 {%- endmacro -%}
 
 {#- macros for render option commented by default -#}
@@ -42,11 +50,11 @@
 # What ports, IPs and protocols we listen for
 {{ option('Port', 22) }}
 # Use these options to restrict which interfaces/protocols sshd will bind to
-{{ option('ListenAddress', ['::', '0.0.0.0']) -}}
+{{ option('ListenAddress', ['::', '0.0.0.0']) }}
 {{ option_default_uncommented('Protocol', 2) }}
 
 # HostKeys for protocol version 2
-{{ option_default_uncommented('HostKey', ['/etc/ssh/ssh_host_rsa_key', '/etc/ssh/ssh_host_dsa_key', '/etc/ssh/ssh_host_ecdsa_key']) -}}
+{{ option_default_uncommented('HostKey', ['/etc/ssh/ssh_host_rsa_key', '/etc/ssh/ssh_host_dsa_key', '/etc/ssh/ssh_host_ecdsa_key', '/etc/ssh/ssh_host_ed25519_key']) -}}
 
 #Privilege Separation is turned on for security
 {{ option_default_uncommented('UsePrivilegeSeparation', 'yes') }}
@@ -84,6 +92,7 @@
 # Change to yes to enable challenge-response passwords (beware issues with
 # some PAM modules and threads)
 {{ option_default_uncommented('ChallengeResponseAuthentication', 'no') }}
+{{ option('AuthenticationMethods', 'publickey,keyboard-interactive') }}
 
 # Change to no to disable tunnelled clear text passwords
 {{ option('PasswordAuthentication', 'yes') }}
@@ -128,19 +137,40 @@
 # DNS resolve and map remote IP addresses
 {{ option('UseDNS', 'yes') }}
 
+# Restricting Users and Hosts
+# example:
+#  AllowUsers vader@10.0.0.1 maul@sproing.evil.com luke 
+#  AllowGroups wheel staff
+#
+# Keep in mind that using AllowUsers or AllowGroups means that anyone
+# not Matching one of the supplied patterns will be denied access by default.
+# Also, in order for sshd to allow access based on full or partial hostnames it
+# needs to to a DNS lookup
+#
+# DenyUsers
+{{ option('DenyUsers', '') }}
+# AllowUsers
+{{ option('AllowUsers', '') }}
+# DenyGroups
+{{ option('DenyGroups', '') }}
+# AllowGroups
+{{ option('AllowGroups', '') }}
+
 {# Handling unknown in salt template options #}
-{%- for keyword, argument in sshd_config.iteritems() %}
-  {%- if not keyword in processed_options -%}
-    {%- if argument is sameas true %}
-{{ keyword }} yes
-    {%- elif argument is sameas false %}
-{{ keyword }} no
-    {%- elif argument is string or argument is number %}
-{{ keyword }} {{ argument }}
-    {%- else %}
-      {%- for item in argument %}
-{{ keyword }} {{ item }}
-      {%- endfor %}
-    {%- endif %}
+{%- for keyword in sshd_config.keys() %}
+  {#- Matches have to be at the bottem and should be handled differently -#}
+  {%- if not keyword in processed_options and keyword != 'matches' -%}
+{#- send a blank default as it doesn't matter #}
+{{ render_option(keyword, '') }}
   {%- endif -%}
 {%- endfor %}
+
+{# Handle matches last as they need to go at the bottom #}
+{%- if 'matches' in sshd_config %}
+  {%- for match in sshd_config['matches'].values() %}
+Match {{ match['type'].keys()[0] }} {{ match['type'].values()[0] }}
+    {%- for keyword in match['options'].keys() %}
+    {{ render_option(keyword, '', config_dict=match['options']) }}
+    {%- endfor %}
+  {%- endfor %}
+{%- endif %}
